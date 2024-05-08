@@ -781,7 +781,6 @@ survival |>
   footnote(general = "Percentages provided in parentheses.")
 ```
 
-
 We can also output an analogous table using Python. 
 
 ```{python}
@@ -879,8 +878,8 @@ cancer_smr <- cancer_suicides |>
     person_years = sum(person_years)
   ) |>
   mutate(
-    smr = signif(observed_suicides / expected_suicides, digits = 2),
-    aer = signif((observed_suicides - expected_suicides) / person_years * 10000,
+    smr = round(observed_suicides / expected_suicides, digits = 2),
+    aer = round((observed_suicides - expected_suicides) / person_years * 10000,
                  digits = 2
     )
   ) |>
@@ -906,6 +905,76 @@ kableExtra::kable(
 
 ```
 
+We can also output an analogous table using Python. 
+
+```{python}
+#| error: false
+#| message: false
+#| warning: false
+#| code-fold: true
+#| code-summary: "Python"
+
+# Import necessary packages
+import pandas as pd
+import numpy as np
+from tabulate import tabulate
+from IPython.display import Markdown
+
+# Import dataset
+df_survival = pd.read_csv("C:/Users/yangj/OneDrive - University College London/NCRAS/dataset/survival.csv")
+df_suicides = pd.read_csv("C:/Users/yangj/OneDrive - University College London/NCRAS/dataset/reference_suicides.csv")
+
+# Calculate suicides among cancer patients
+df_survival['attained_age'] = df_survival['age_category_at_death']
+df_survival['sex'] = df_survival['gender']
+df_survival['year'] = pd.to_datetime(df_survival['vital_status_date']).dt.year
+df_survival['suicide'] = df_survival['suicide'] - 1
+
+# Group by and summarize
+grouped = df_survival.groupby(['year', 'sex', 'attained_age', 'cancer_group'])
+cancer_suicides = grouped.agg(
+    person_years=pd.NamedAgg(column='time', aggfunc=lambda x: round(x.sum())),
+    suicide_deaths=pd.NamedAgg(column='suicide', aggfunc='sum')
+).reset_index()
+cancer_suicides.dropna(inplace=True)
+cancer_suicides = cancer_suicides.drop_duplicates()
+cancer_suicides['sex'] = cancer_suicides['sex'].astype(str)
+cancer_suicides['attained_age'] = cancer_suicides['attained_age'].astype(str)
+
+# Prepare for merging by ensuring alignment of the key columns used for join
+cancer_suicides = cancer_suicides.merge(df_suicides, on=['year', 'sex', 'attained_age'], how='left')
+
+# Handle potential NaN values from the merge before calculation
+cancer_suicides['suicides_per_100000'] = cancer_suicides['suicides_per_100000']
+
+# Calculate expected suicides
+cancer_suicides['expected_suicides'] = (cancer_suicides['person_years'] / 10000) * cancer_suicides['suicides_per_100000']
+
+# Aggregate for SMR calculation
+grouped_smr = cancer_suicides.groupby('cancer_group')
+cancer_smr = grouped_smr.agg(
+    observed_suicides=pd.NamedAgg(column='suicide_deaths', aggfunc='sum'),
+    expected_suicides=pd.NamedAgg(column='expected_suicides', aggfunc=lambda x: round(x.sum())),
+    person_years=pd.NamedAgg(column='person_years', aggfunc='sum')
+).reset_index()
+
+cancer_smr['smr'] = np.round(cancer_smr['observed_suicides'] / cancer_smr['expected_suicides'], 2)
+cancer_smr['aer'] = np.round((cancer_smr['observed_suicides'] - cancer_smr['expected_suicides']) / cancer_smr['person_years'] * 10000, 2)
+
+# Display as a table with custom column names
+cancer_smr_table = cancer_smr[['cancer_group', 'person_years', 'observed_suicides', 'expected_suicides', 'smr', 'aer']]
+cancer_smr_table.columns = [
+    'Last primary cancer', 
+    'Person-years observed', 
+    'Observed suicide deaths', 
+    'Expected suicide deaths', 
+    'Standardised mortality ratio', 
+    'Absolute excess risk per 10 000'
+]
+
+# Display the table
+Markdown(tabulate(cancer_smr_table, headers='keys'))
+```
 # Suicide SMRs and AERs per 10 000 person-years at risk according to sex for all cancers combined
 
 These tables aim to reproduce the some of the outputs of Table 3 in [@henson_risk_2019].
@@ -951,8 +1020,8 @@ sex_smr <- cancer_suicides |>
     person_years = sum(person_years)
   ) |>
   mutate(
-    smr = signif(observed_suicides / expected_suicides, digits = 2),
-    aer = signif((observed_suicides - expected_suicides) / person_years * 10000,
+    smr = round(observed_suicides / expected_suicides, digits = 2),
+    aer = round((observed_suicides - expected_suicides) / person_years * 10000,
                  digits = 2
     )
   ) |>
@@ -978,6 +1047,70 @@ kableExtra::kable(
 
 ```
 
+We can also output an analogous table using Python. 
+
+```{python}
+#| error: false
+#| message: false
+#| warning: false
+#| code-fold: true
+#| code-summary: "Python"
+
+# Import necessary packages
+import pandas as pd
+import numpy as np
+from tabulate import tabulate
+from IPython.display import Markdown
+
+# Import dataset
+df_survival = pd.read_csv("C:/Users/yangj/OneDrive - University College London/NCRAS/dataset/survival.csv")
+df_suicides = pd.read_csv("C:/Users/yangj/OneDrive - University College London/NCRAS/dataset/reference_suicides.csv")
+
+# Calculate suicides among cancer patients
+df_survival['attained_age'] = df_survival['age_category_at_death']
+df_survival['sex'] = df_survival['gender']
+df_survival['year'] = pd.to_datetime(df_survival['vital_status_date']).dt.year
+df_survival['suicide'] = df_survival['suicide'] - 1
+
+# Group by and summarize
+grouped = df_survival.groupby(['year', 'sex', 'attained_age'])
+cancer_suicides = grouped.agg(
+    person_years=pd.NamedAgg(column='time', aggfunc=lambda x: round(x.sum())),
+    suicide_deaths=pd.NamedAgg(column='suicide', aggfunc='sum')
+).reset_index()
+cancer_suicides.dropna(inplace=True)
+cancer_suicides = cancer_suicides.drop_duplicates()
+cancer_suicides['sex'] = cancer_suicides['sex'].astype(str)
+cancer_suicides['attained_age'] = cancer_suicides['attained_age'].astype(str)
+
+# Calculate SMRs
+cancer_suicides = cancer_suicides.merge(df_suicides, on=['sex'], how='left')
+cancer_suicides['expected_suicides'] = (cancer_suicides['person_years'] / 10000) * cancer_suicides['suicides_per_100000']
+
+grouped_smr = cancer_suicides.groupby('sex')
+sex_smr = grouped_smr.agg(
+    observed_suicides=pd.NamedAgg(column='suicide_deaths', aggfunc='sum'),
+    expected_suicides=pd.NamedAgg(column='expected_suicides', aggfunc=lambda x: round(x.sum())),
+    person_years=pd.NamedAgg(column='person_years', aggfunc='sum')
+).reset_index()
+
+sex_smr['smr'] = np.round(sex_smr['observed_suicides'] / sex_smr['expected_suicides'], 2)
+sex_smr['aer'] = np.round((sex_smr['observed_suicides'] - sex_smr['expected_suicides']) / sex_smr['person_years'] * 10000, 2)
+
+# Display as a table with custom column names
+sex_smr_table = sex_smr[['sex', 'person_years', 'observed_suicides', 'expected_suicides', 'smr', 'aer']]
+sex_smr_table.columns = [
+    'Sex', 
+    'Person-years observed', 
+    'Observed suicide deaths', 
+    'Expected suicide deaths', 
+    'Standardised mortality ratio', 
+    'Absolute excess risk per 10 000'
+]
+
+# Display the table
+Markdown(tabulate(sex_smr_table, headers='keys'))
+```
 # Suicide SMRs and AERs per 10 000 person-years at risk according to attained age at death for all cancers combined
 
 These tables aim to reproduce the some of the outputs of Table 3 in [@henson_risk_2019].
@@ -1023,8 +1156,8 @@ age_smr <- cancer_suicides |>
     person_years = sum(person_years)
   ) |>
   mutate(
-    smr = signif(observed_suicides / expected_suicides, digits = 2),
-    aer = signif((observed_suicides - expected_suicides) / person_years * 10000,
+    smr = round(observed_suicides / expected_suicides, digits = 2),
+    aer = round((observed_suicides - expected_suicides) / person_years * 10000,
                  digits = 2
     )
   ) |>
@@ -1052,6 +1185,81 @@ kableExtra::kable(
 
 ```
 
+We can also output an analogous table using Python. 
+
+```{python}
+#| error: false
+#| message: false
+#| warning: false
+#| code-fold: true
+#| code-summary: "Python"
+
+# Import necessary packages
+import pandas as pd
+import numpy as np
+from tabulate import tabulate
+from IPython.display import Markdown
+
+# Import dataset
+df_survival = pd.read_csv("C:/Users/yangj/OneDrive - University College London/NCRAS/dataset/survival.csv")
+df_suicides = pd.read_csv("C:/Users/yangj/OneDrive - University College London/NCRAS/dataset/reference_suicides.csv")
+
+# Calculate suicides among cancer patients
+df_survival['attained_age'] = df_survival['age_category_at_death']
+df_survival['sex'] = df_survival['gender']
+df_survival['year'] = pd.to_datetime(df_survival['vital_status_date']).dt.year
+df_survival['suicide'] = df_survival['suicide'] - 1
+
+# Calculate suicides among cancer patients
+df_survival['attained_age'] = df_survival['age_category_at_death']
+df_survival['sex'] = df_survival['gender']
+df_survival['year'] = pd.to_datetime(df_survival['vital_status_date']).dt.year
+df_survival['suicide'] = df_survival['suicide'] - 1
+
+# Group by and summarize
+grouped = df_survival.groupby(['year', 'sex', 'attained_age'])
+cancer_suicides = grouped.agg(
+    person_years=pd.NamedAgg(column='time', aggfunc=lambda x: round(x.sum())),
+    suicide_deaths=pd.NamedAgg(column='suicide', aggfunc='sum')
+).reset_index()
+
+# Dropping NaN values and ensuring data types for merging
+cancer_suicides.dropna(inplace=True)
+cancer_suicides = cancer_suicides.drop_duplicates()
+cancer_suicides['sex'] = cancer_suicides['sex'].astype(str)
+cancer_suicides['attained_age'] = cancer_suicides['attained_age'].astype(str)
+
+# Calculate SMRs
+cancer_suicides = cancer_suicides.merge(df_suicides, on='attained_age', how='left')
+cancer_suicides['expected_suicides'] = (cancer_suicides['person_years'] / 10000) * cancer_suicides['suicides_per_100000']
+
+grouped_smr = cancer_suicides.groupby('attained_age')
+age_smr = grouped_smr.agg(
+    observed_suicides=pd.NamedAgg(column='suicide_deaths', aggfunc='sum'),
+    expected_suicides=pd.NamedAgg(column='expected_suicides', aggfunc=lambda x: round(x.sum())),
+    person_years=pd.NamedAgg(column='person_years', aggfunc='sum')
+).reset_index()
+
+age_smr['smr'] = np.round(age_smr['observed_suicides'] / age_smr['expected_suicides'], 2)
+age_smr['aer'] = np.round((age_smr['observed_suicides'] - age_smr['expected_suicides']) / age_smr['person_years'] * 10000, 2)
+
+# Filter out specific age groups
+age_smr = age_smr[(age_smr['attained_age'] != '15-19') & (age_smr['attained_age'] != '20-24')]
+
+# Display as a table with custom column names
+age_smr_table = age_smr[['attained_age', 'person_years', 'observed_suicides', 'expected_suicides', 'smr', 'aer']]
+age_smr_table.columns = [
+    'Attained age at death', 
+    'Person-years observed', 
+    'Observed suicide deaths', 
+    'Expected suicide deaths', 
+    'Standardised mortality ratio', 
+    'Absolute excess risk per 10 000'
+]
+
+# Display the table
+Markdown(tabulate(age_smr_table, headers='keys'))
+```
 # Suicide SMRs and AERs per 10 000 person-years at risk according to deprivation at death for all cancers combined
 
 These tables aim to reproduce the some of the outputs of Table 3 in [@henson_risk_2019].
@@ -1099,8 +1307,8 @@ deprivation_smr <- cancer_suicides |>
     person_years = sum(person_years)
   ) |>
   mutate(
-    smr = signif(observed_suicides / expected_suicides, digits = 2),
-    aer = signif((observed_suicides - expected_suicides) / person_years * 10000,
+    smr = round(observed_suicides / expected_suicides, digits = 2),
+    aer = round((observed_suicides - expected_suicides) / person_years * 10000,
                  digits = 2
     )
   ) |>
@@ -1126,6 +1334,76 @@ kableExtra::kable(
 
 ```
 
+We can also output an analogous table using Python. 
+
+```{python}
+#| error: false
+#| message: false
+#| warning: false
+#| code-fold: true
+#| code-summary: "Python"
+
+# Import necessary packages
+import pandas as pd
+import numpy as np
+from tabulate import tabulate
+from IPython.display import Markdown
+
+# Import dataset
+df_survival = pd.read_csv("C:/Users/yangj/OneDrive - University College London/NCRAS/dataset/survival.csv")
+df_suicides = pd.read_csv("C:/Users/yangj/OneDrive - University College London/NCRAS/dataset/reference_suicides.csv")
+
+# Calculate suicides among cancer patients
+df_survival['attained_age'] = df_survival['age_category_at_death']
+df_survival['sex'] = df_survival['gender']
+df_survival['year'] = pd.to_datetime(df_survival['vital_status_date']).dt.year
+df_survival['suicide'] = df_survival['suicide'] - 1
+
+# Prepare data by ensuring string data types for categorical manipulation
+df_survival['sex'] = df_survival['sex'].astype(str)
+df_survival['attained_age'] = df_survival['attained_age'].astype(str)
+
+# Group by and summarize
+grouped = df_survival.groupby(['year', 'sex', 'attained_age', 'deprivation_quintile_reversed'])
+cancer_suicides = grouped.agg(
+    person_years=pd.NamedAgg(column='time', aggfunc=lambda x: round(x.sum())),
+    suicide_deaths=pd.NamedAgg(column='suicide', aggfunc='sum')
+).reset_index()
+
+# Drop NaN values and ensure distinct records
+cancer_suicides.dropna(inplace=True)
+cancer_suicides.drop_duplicates(inplace=True)
+
+# Calculate SMRs
+cancer_suicides = cancer_suicides.merge(df_suicides, on=['sex', 'attained_age'], how='left')
+cancer_suicides['expected_suicides'] = (cancer_suicides['person_years'] / 10000) * cancer_suicides['suicides_per_100000']
+
+# Group by deprivation and summarize
+grouped_smr = cancer_suicides.groupby('deprivation_quintile_reversed')
+deprivation_smr = grouped_smr.agg(
+    observed_suicides=pd.NamedAgg(column='suicide_deaths', aggfunc='sum'),
+    expected_suicides=pd.NamedAgg(column='expected_suicides', aggfunc=lambda x: round(x.sum())),
+    person_years=pd.NamedAgg(column='person_years', aggfunc='sum')
+).reset_index()
+
+# Calculate SMR and AER
+deprivation_smr['smr'] = np.round(deprivation_smr['observed_suicides'] / deprivation_smr['expected_suicides'], 2)
+deprivation_smr['aer'] = np.round((deprivation_smr['observed_suicides'] - deprivation_smr['expected_suicides']) / deprivation_smr['person_years'] * 10000, 2)
+
+# Display as a table with custom column names
+deprivation_smr_table = deprivation_smr[['deprivation_quintile_reversed', 'person_years', 'observed_suicides', 'expected_suicides', 'smr', 'aer']]
+deprivation_smr_table.columns = [
+    'Deprivation', 
+    'Person-years observed', 
+    'Observed suicide deaths', 
+    'Expected suicide deaths', 
+    'Standardised mortality ratio', 
+    'Absolute excess risk per 10 000'
+]
+
+# Display the table
+Markdown(tabulate(deprivation_smr_table, headers='keys'))
+```
 # Suicide SMRs and AERs per 10 000 person-years at risk according to ethnicity at death for all cancers combined
 
 These tables aim to reproduce the some of the outputs of Table 3 in [@henson_risk_2019].
@@ -1173,8 +1451,8 @@ ethnicity_smr <- cancer_suicides |>
     person_years = sum(person_years)
   ) |>
   mutate(
-    smr = signif(observed_suicides / expected_suicides, digits = 2),
-    aer = signif((observed_suicides - expected_suicides) / person_years * 10000,
+    smr = round(observed_suicides / expected_suicides, digits = 2),
+    aer = round((observed_suicides - expected_suicides) / person_years * 10000,
                  digits = 2
     )
   ) |>
@@ -1198,4 +1476,75 @@ kableExtra::kable(
 ) |>
   kable_classic(full_width = F)
 
+```
+
+We can also output an analogous table using Python. 
+
+```{python}
+#| error: false
+#| message: false
+#| warning: false
+#| code-fold: true
+#| code-summary: "Python"
+
+# Import necessary packages
+import pandas as pd
+import numpy as np
+from tabulate import tabulate
+from IPython.display import Markdown
+
+# Import dataset
+df_survival = pd.read_csv("C:/Users/yangj/OneDrive - University College London/NCRAS/dataset/survival.csv")
+df_suicides = pd.read_csv("C:/Users/yangj/OneDrive - University College London/NCRAS/dataset/reference_suicides.csv")
+
+# Calculate suicides among cancer patients
+df_survival['attained_age'] = df_survival['age_category_at_death']
+df_survival['sex'] = df_survival['gender']
+df_survival['year'] = pd.to_datetime(df_survival['vital_status_date']).dt.year
+df_survival['suicide'] = df_survival['suicide'] - 1
+
+# Prepare data by ensuring string data types for categorical manipulation
+df_survival['sex'] = df_survival['sex'].astype(str)
+df_survival['attained_age'] = df_survival['attained_age'].astype(str)
+
+# Group by and summarize
+grouped = df_survival.groupby(['year', 'sex', 'attained_age', 'ethnicity'])
+cancer_suicides = grouped.agg(
+    person_years=pd.NamedAgg(column='time', aggfunc=lambda x: round(x.sum())),
+    suicide_deaths=pd.NamedAgg(column='suicide', aggfunc='sum')
+).reset_index()
+
+# Drop NaN values and ensure distinct records
+cancer_suicides.dropna(inplace=True)
+cancer_suicides.drop_duplicates(inplace=True)
+
+# Calculate SMRs
+cancer_suicides = cancer_suicides.merge(df_suicides, on=['sex', 'attained_age'], how='left')
+cancer_suicides['expected_suicides'] = (cancer_suicides['person_years'] / 10000) * cancer_suicides['suicides_per_100000']
+
+# Group by ethnicity and summarize
+grouped_smr = cancer_suicides.groupby('ethnicity')
+ethnicity_smr = grouped_smr.agg(
+    observed_suicides=pd.NamedAgg(column='suicide_deaths', aggfunc='sum'),
+    expected_suicides=pd.NamedAgg(column='expected_suicides', aggfunc=lambda x: round(x.sum())),
+    person_years=pd.NamedAgg(column='person_years', aggfunc='sum')
+).reset_index()
+
+# Calculate SMR and AER
+ethnicity_smr['smr'] = np.round(ethnicity_smr['observed_suicides'] / ethnicity_smr['expected_suicides'], 2)
+ethnicity_smr['aer'] = np.round((ethnicity_smr['observed_suicides'] - ethnicity_smr['expected_suicides']) / ethnicity_smr['person_years'] * 10000, 2)
+
+# Display as a table with custom column names
+ethnicity_smr_table = ethnicity_smr[['ethnicity', 'person_years', 'observed_suicides', 'expected_suicides', 'smr', 'aer']]
+ethnicity_smr_table.columns = [
+    'Ethnicity', 
+    'Person-years observed', 
+    'Observed suicide deaths', 
+    'Expected suicide deaths', 
+    'Standardised mortality ratio', 
+    'Absolute excess risk per 10 000'
+]
+
+# Display the table
+Markdown(tabulate(ethnicity_smr_table, headers='keys'))
 ```
