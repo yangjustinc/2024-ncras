@@ -1,0 +1,1201 @@
+---
+title: "Risk of Suicide After Cancer Diagnosis in England"
+subtitle: "Examplar code using R and Python"
+author: 
+  - name: Justin C Yang
+    email: justin.yang@ucl.ac.uk
+    affiliations: 
+    - University College London
+    - Camden & Islington NHS Foundation Trust
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+date-format: long
+bibliography: "citations.bib"
+csl: https://raw.githubusercontent.com/citation-style-language/styles/master/apa-6th-edition.csl
+format: 
+  html:
+    toc: true
+    number-sections: true
+    embed-resources: true
+    anchor-sections: true
+    smooth-scroll: true
+    code-line-numbers: true
+    email-obfuscation: javascript
+    license: "CC BY-NC-SA"
+project:
+  type: website
+  output-dir: docs
+---
+
+The code below aims to mimic some of the outputs of [@henson_risk_2019], namely, to calculate standardised mortality ratios comparing suicide deaths among individuals diagnosed with cancer with the general population.
+
+This code mimics but does not fully replicate the [code made available by the NHS England](https://github.com/NHSE-NDRS/risk_of_suicide_after_cancer_diagnosis) for the study because this code was written without access to the underlying datasets. Instead, this code was written using [the Simulacrum](https://www.cancerdata.nhs.uk/simulacrum), a synthetic dataset which imitates some of the data used in the original study. It is important to note that the Simulacrum is missing several key variables which this code aims to reproducibly create but will not produce valid results. Consequently, results are not intended to be interpreted and may not make sense given prior knowledge. For example, patient ages were drawn from a random distribution as age/date of birth variables are not available in Simulacrum. To understand what the authors in [@henson_risk_2019] did more fully, I would recommend consulting [their annotated code](https://github.com/NHSE-NDRS/risk_of_suicide_after_cancer_diagnosis). 
+
+Standardised mortality rates for suicide deaths for England were obtained from [the Office for National Statistics](https://www.ons.gov.uk/peoplepopulationandcommunity/birthsdeathsandmarriages/deaths/bulletins/suicidesintheunitedkingdom/2022registrations).
+
+The generalised approach for this analysis is to:
+
+1.  Calculate suicide mortality rates by age and sex among patients diagnosed with cancer (likely using cancer or disease registry data)
+
+2.  Calculate suicide mortality rates by age and sex among the general population (likely using civil mortality registers)
+
+3.  Calculate standardised mortality ratios and absolute excess risks using these mortality rates
+
+For an introduction to direct and indirect standardisation methods, you can consult [@naing_easy_2000].
+
+Many thanks to Chloe Bright who provided me with the original Stata code for this analysis and to Alexandra Pitman for supporting this work.
+
+# Set up
+
+In the first instance, you'll need access to data on suicide deaths among patients with cancer and suicide deaths among the general population. We will be standardising by sex and age group so we will need to first prepare the data accordingly. In the R code below, we use functions from the [Tidyverse](https://www.tidyverse.org/) but you can just as easily do this in base R or using different functions.
+
+First, we process data on suicide deaths among patients with cancer, including recoding cancer groups and underlying causes of death (presumably using ICD codes). As well, we need to note the diagnosis date (which serves as the start date) and the date of exit from the cohort (i.e. exit due to death, loss to follow-up, or end of follow-up). In the Simulacrum dataset, this is relatively straightforward because we are using the date of diagnosis up to the date of vital status but other datasets will need to note other potential exit causes (e.g. loss to follow-up). Once we have recoded and cleaned the data among cancer patients, we can set it as survival data to be able to derive the number of person-years observed.
+
+Next, we need to process data on suicide deaths in the general population. This allows us to calculate the expected number of suicide deaths based on population rates. You are likely to do this using civil mortality registers or other information provided by national statistics offices about suicide deaths in the general population, standardised by age and sex.
+
+```{r}
+#| error: false
+#| message: false
+#| warning: false
+#| code-fold: true
+#| code-summary: "R Code"
+
+# Load required libraries
+library(arrow)
+library(beepr)
+library(bibtex)
+library(blob)
+library(data.table)
+library(dplyr)
+library(dtplyr)
+library(finalfit)
+library(forcats)
+library(foreign)
+library(ggplot2)
+library(glue)
+library(haven)
+library(here)
+library(Hmisc)
+library(hms)
+library(janitor)
+library(kableExtra)
+library(lubridate)
+library(magrittr)
+library(multidplyr)
+library(parallel)
+library(purrr)
+library(reticulate)
+library(readr)
+library(readxl)
+library(renv)
+library(stringi)
+library(stringr)
+library(survival)
+library(tibble)
+library(tidyr)
+library(xlsx)
+
+# Set seed for reproducibility
+## This will ensure randomly generated variables are reproducible 
+set.seed(1223)
+
+# Set clusters
+## Because data used in these analyses can be quite large, I am making use of a number of packages which help, including packages to parallelize functions where possible and to load data in columnar format 
+## This function will set clusters to n-1 where n is the number of cores on your machine
+cluster <- new_cluster(parallel::detectCores() - 1)
+
+# Load data files in Arrow
+## Arrow is used here to help load in very large data files and to process them
+## More detail is available at https://arrow.apache.org/
+sim_av_patient <-
+  open_csv_dataset(here("simulacrum_v2.1.0", "Data", "sim_av_patient.csv"))
+
+sim_av_tumour <-
+  open_csv_dataset(here("simulacrum_v2.1.0", "Data", "sim_av_tumour.csv"))
+
+# Data extraction from source
+## We define the exclusions here and use their patient IDs later to remove them from the cohort
+exclusions <- sim_av_patient |>
+  select(PATIENTID, VITALSTATUS) |>
+  collect() |>
+  janitor::clean_names() |>
+  distinct() |>
+  dplyr::filter(
+    str_detect(vitalstatus, "A[123]") |
+      str_detect(vitalstatus, "D[145]") |
+      str_detect(vitalstatus, "X1") |
+      str_detect(vitalstatus, "I")
+  ) |>
+  select(patientid)
+
+# Here we extract information about cancer patients, including causes of death related to suicide 
+patient <- sim_av_patient |>
+  select(
+    PATIENTID,
+    GENDER,
+    ETHNICITY,
+    VITALSTATUS,
+    VITALSTATUSDATE,
+    DEATHCAUSECODE_1A,
+    DEATHCAUSECODE_1B,
+    DEATHCAUSECODE_1C,
+    DEATHCAUSECODE_2,
+    DEATHCAUSECODE_UNDERLYING
+  ) |>
+  collect() |>
+  janitor::clean_names() |>
+  distinct() |>
+  anti_join(exclusions) |>
+  mutate(
+    suicide_cause_2 =
+      case_when(
+        str_detect(deathcausecode_1a, "Y339") ~ NA,
+        str_detect(deathcausecode_1a, "E9888") ~ NA,
+        str_detect(deathcausecode_1a, "X6[0123456789]") ~ "1A",
+        str_detect(deathcausecode_1a, "X7[0123456789]") ~ "1A",
+        str_detect(deathcausecode_1a, "X8[01234]") ~ "1A",
+        str_detect(deathcausecode_1a, "Y1[0123456789]") ~ "1A",
+        str_detect(deathcausecode_1a, "Y2[0123456789]") ~ "1A",
+        str_detect(deathcausecode_1a, "Y3[01234]") ~ "1A",
+        str_detect(deathcausecode_1a, "E98") ~ "1A",
+        str_detect(deathcausecode_1a, "E95[0123456789]") ~ "1A",
+        str_detect(deathcausecode_1a, "E87[02]") ~ "1A",
+        str_detect(deathcausecode_1b, "Y339") ~ NA,
+        str_detect(deathcausecode_1b, "E9888") ~ NA,
+        str_detect(deathcausecode_1b, "X6[0123456789]") ~ "1B",
+        str_detect(deathcausecode_1b, "X7[0123456789]") ~ "1B",
+        str_detect(deathcausecode_1b, "X8[01234]") ~ "1B",
+        str_detect(deathcausecode_1b, "Y1[0123456789]") ~ "1B",
+        str_detect(deathcausecode_1b, "Y2[0123456789]") ~ "1B",
+        str_detect(deathcausecode_1b, "Y3[01234]") ~ "1B",
+        str_detect(deathcausecode_1b, "E98") ~ "1B",
+        str_detect(deathcausecode_1b, "E95[0123456789]") ~ "1B",
+        str_detect(deathcausecode_1b, "E87[02]") ~ "1B",
+        str_detect(deathcausecode_1c, "Y339") ~ NA,
+        str_detect(deathcausecode_1c, "E9888") ~ NA,
+        str_detect(deathcausecode_1c, "X6[0123456789]") ~ "1C",
+        str_detect(deathcausecode_1c, "X7[0123456789]") ~ "1C",
+        str_detect(deathcausecode_1c, "X8[01234]") ~ "1C",
+        str_detect(deathcausecode_1c, "Y1[0123456789]") ~ "1C",
+        str_detect(deathcausecode_1c, "Y2[0123456789]") ~ "1C",
+        str_detect(deathcausecode_1c, "Y3[01234]") ~ "1C",
+        str_detect(deathcausecode_1c, "E98") ~ "1C",
+        str_detect(deathcausecode_1c, "E95[0123456789]") ~ "1C",
+        str_detect(deathcausecode_1c, "E87[02]") ~ "1C",
+        str_detect(deathcausecode_2, "Y339") ~ NA,
+        str_detect(deathcausecode_2, "E9888") ~ NA,
+        str_detect(deathcausecode_2, "X6[0123456789]") ~ "2",
+        str_detect(deathcausecode_2, "X7[0123456789]") ~ "2",
+        str_detect(deathcausecode_2, "X8[01234]") ~ "2",
+        str_detect(deathcausecode_2, "Y1[0123456789]") ~ "2",
+        str_detect(deathcausecode_2, "Y2[0123456789]") ~ "2",
+        str_detect(deathcausecode_2, "Y3[01234]") ~ "2",
+        str_detect(deathcausecode_2, "E98") ~ "2",
+        str_detect(deathcausecode_2, "E95[0123456789]") ~ "2",
+        str_detect(deathcausecode_2, "E87[02]") ~ "2",
+        str_detect(deathcausecode_underlying, "Y339") ~ NA,
+        str_detect(deathcausecode_underlying, "E9888") ~ NA,
+        str_detect(deathcausecode_underlying, "X6[0123456789]") ~ "Underlying",
+        str_detect(deathcausecode_underlying, "X7[0123456789]") ~ "Underlying",
+        str_detect(deathcausecode_underlying, "X8[01234]") ~ "Underlying",
+        str_detect(deathcausecode_underlying, "Y1[0123456789]") ~ "Underlying",
+        str_detect(deathcausecode_underlying, "Y2[0123456789]") ~ "Underlying",
+        str_detect(deathcausecode_underlying, "Y3[01234]") ~ "Underlying",
+        str_detect(deathcausecode_underlying, "E98") ~ "Underlying",
+        str_detect(deathcausecode_underlying, "E95[0123456789]") ~ "Underlying",
+        str_detect(deathcausecode_underlying, "E87[02]") ~ "Underlying",
+        TRUE ~ NA
+      )
+  ) |>
+  mutate(
+    suicide_2 =
+      case_when(
+        str_detect(deathcausecode_1a, "Y339") ~ 0,
+        str_detect(deathcausecode_1a, "E9888") ~ 0,
+        str_detect(deathcausecode_1a, "X6[0123456789]") ~ 1,
+        str_detect(deathcausecode_1a, "X7[0123456789]") ~ 1,
+        str_detect(deathcausecode_1a, "X8[01234]") ~ 1,
+        str_detect(deathcausecode_1a, "Y1[0123456789]") ~ 1,
+        str_detect(deathcausecode_1a, "Y2[0123456789]") ~ 1,
+        str_detect(deathcausecode_1a, "Y3[01234]") ~ 1,
+        str_detect(deathcausecode_1a, "E98") ~ 1,
+        str_detect(deathcausecode_1a, "E95[0123456789]") ~ 1,
+        str_detect(deathcausecode_1a, "E87[02]") ~ 1,
+        str_detect(deathcausecode_1b, "Y339") ~ 0,
+        str_detect(deathcausecode_1b, "E9888") ~ 0,
+        str_detect(deathcausecode_1b, "X6[0123456789]") ~ 1,
+        str_detect(deathcausecode_1b, "X7[0123456789]") ~ 1,
+        str_detect(deathcausecode_1b, "X8[01234]") ~ 1,
+        str_detect(deathcausecode_1b, "Y1[0123456789]") ~ 1,
+        str_detect(deathcausecode_1b, "Y2[0123456789]") ~ 1,
+        str_detect(deathcausecode_1b, "Y3[01234]") ~ 1,
+        str_detect(deathcausecode_1b, "E98") ~ 1,
+        str_detect(deathcausecode_1b, "E95[0123456789]") ~ 1,
+        str_detect(deathcausecode_1b, "E87[02]") ~ 1,
+        str_detect(deathcausecode_1c, "Y339") ~ 0,
+        str_detect(deathcausecode_1c, "E9888") ~ 0,
+        str_detect(deathcausecode_1c, "X6[0123456789]") ~ 1,
+        str_detect(deathcausecode_1c, "X7[0123456789]") ~ 1,
+        str_detect(deathcausecode_1c, "X8[01234]") ~ 1,
+        str_detect(deathcausecode_1c, "Y1[0123456789]") ~ 1,
+        str_detect(deathcausecode_1c, "Y2[0123456789]") ~ 1,
+        str_detect(deathcausecode_1c, "Y3[01234]") ~ 1,
+        str_detect(deathcausecode_1c, "E98") ~ 1,
+        str_detect(deathcausecode_1c, "E95[0123456789]") ~ 1,
+        str_detect(deathcausecode_1c, "E87[02]") ~ 1,
+        str_detect(deathcausecode_2, "Y339") ~ 0,
+        str_detect(deathcausecode_2, "E9888") ~ 0,
+        str_detect(deathcausecode_2, "X6[0123456789]") ~ 1,
+        str_detect(deathcausecode_2, "X7[0123456789]") ~ 1,
+        str_detect(deathcausecode_2, "X8[01234]") ~ 1,
+        str_detect(deathcausecode_2, "Y1[0123456789]") ~ 1,
+        str_detect(deathcausecode_2, "Y2[0123456789]") ~ 1,
+        str_detect(deathcausecode_2, "Y3[01234]") ~ 1,
+        str_detect(deathcausecode_2, "E98") ~ 1,
+        str_detect(deathcausecode_2, "E95[0123456789]") ~ 1,
+        str_detect(deathcausecode_2, "E87[02]") ~ 1,
+        str_detect(deathcausecode_underlying, "Y339") ~ 0,
+        str_detect(deathcausecode_underlying, "E9888") ~ 0,
+        str_detect(deathcausecode_underlying, "X6[0123456789]") ~ 1,
+        str_detect(deathcausecode_underlying, "X7[0123456789]") ~ 1,
+        str_detect(deathcausecode_underlying, "X8[01234]") ~ 1,
+        str_detect(deathcausecode_underlying, "Y1[0123456789]") ~ 1,
+        str_detect(deathcausecode_underlying, "Y2[0123456789]") ~ 1,
+        str_detect(deathcausecode_underlying, "Y3[01234]") ~ 1,
+        str_detect(deathcausecode_underlying, "E98") ~ 1,
+        str_detect(deathcausecode_underlying, "E95[0123456789]") ~ 1,
+        str_detect(deathcausecode_underlying, "E87[02]") ~ 1,
+        TRUE ~ 0
+      )
+  ) |>
+  mutate(
+    death_cause_flag =
+      case_when(
+        str_detect(vitalstatus, "A") ~ "Alive",
+        (
+          !str_detect(vitalstatus, "A") &
+            is.na(deathcausecode_1a) &
+            is.na(deathcausecode_1b) &
+            is.na(deathcausecode_1c) &
+            is.na(deathcausecode_2) &
+            is.na(deathcausecode_underlying)
+        ) ~ "Dead without Cause",
+        (
+          !str_detect(vitalstatus, "A") &
+            (
+              !is.na(deathcausecode_1a) |
+                !is.na(deathcausecode_1b) |
+                !is.na(deathcausecode_1c) |
+                !is.na(deathcausecode_2) |
+                !is.na(deathcausecode_underlying)
+            )
+        ) ~ "Dead with Cause",
+        TRUE ~ NA
+      )
+  ) |>
+  as.data.table()
+
+# Here we identify the patient's most recently diagnosed cancer 
+tumour <- sim_av_tumour |>
+  select(
+    PATIENTID,
+    TUMOURID,
+    SITE_ICD10_O2_3CHAR,
+    DIAGNOSISDATEBEST,
+    STAGE_BEST,
+    QUINTILE_2019,
+    AGE
+  ) |>
+  collect() |>
+  janitor::clean_names() |>
+  distinct() |>
+  anti_join(exclusions) |>
+  rename(
+    tumour_site = site_icd10_o2_3char,
+    deprivation_quintile = quintile_2019,
+    age_at_diagnosis = age
+  ) |>
+  as.data.table()
+
+# Dataset merging
+## We now merge information from the two source tables and annotate the new dataset
+## Annotations are intended to match the original Stata code developed for this analysis as closely as possible, but you will note that there are some deviations
+dataset <- merge(patient, tumour) |>
+  anti_join(exclusions) |>
+  filter(gender != 9) |>
+  filter(!(gender == 2 & str_detect(tumour_site, "C6[0123]"))) |>
+  filter(!(gender == 1 &
+             str_detect(tumour_site, "C5[12345678]"))) |>
+  filter(str_detect(tumour_site, "^C") &
+           !str_detect(tumour_site, "C44")) |>
+  group_by(patientid) |>
+  arrange(desc(diagnosisdatebest)) |>
+  slice_head() |>
+  rename(
+    patient_id = patientid,
+    gender_code = gender,
+    ethnicity_code = ethnicity,
+    vital_status_code = vitalstatus,
+    vital_status_date = vitalstatusdate,
+    suicide = suicide_2,
+    suicide_cause = suicide_cause_2,
+    tumour_id = tumourid,
+    diagnosis_date = diagnosisdatebest,
+    stage = stage_best,
+  ) |>
+  ungroup() |>
+  mutate(
+    cancer_group = case_when(
+      str_detect(tumour_site, "C0[0123456789]") ~ "Head and neck",
+      str_detect(tumour_site, "C1[01234]") ~ "Head and neck",
+      str_detect(tumour_site, "C15") ~ "Oesophagus",
+      str_detect(tumour_site, "C16") ~ "Stomach",
+      str_detect(tumour_site, "C17") ~ "Other malignant neoplasms",
+      str_detect(tumour_site, "C1[89]") ~ "Colorectal",
+      str_detect(tumour_site, "C20") ~ "Colorectal",
+      str_detect(tumour_site, "C22") ~ "Liver",
+      str_detect(tumour_site, "C25") ~ "Pancreas",
+      str_detect(tumour_site, "C3[12]") ~ "Head and neck",
+      str_detect(tumour_site, "C3[34]") ~ "Lung",
+      str_detect(tumour_site, "C4[019]") ~ "Sarcoma",
+      str_detect(tumour_site, "C43") ~ "Melanoma",
+      str_detect(tumour_site, "C45") ~ "Mesothelioma",
+      str_detect(tumour_site, "C50") ~ "Breast",
+      str_detect(tumour_site, "C53") ~ "Cervix",
+      str_detect(tumour_site, "C5[45]") ~ "Uterus",
+      str_detect(tumour_site, "C5[67]") ~ "Ovary",
+      str_detect(tumour_site, "C61") ~ "Prostate",
+      str_detect(tumour_site, "C62") ~ "Testis",
+      str_detect(tumour_site, "C6[4568]") ~ "Kidney and unspecified urinary organs",
+      str_detect(tumour_site, "C67") ~ "Bladder",
+      str_detect(tumour_site, "C7[012]") ~ "Central Nervous System (incl brain)",
+      str_detect(tumour_site, "C73") ~ "Head and neck",
+      str_detect(tumour_site, "C7[789]") ~ "Cancer of Unknown Primary",
+      str_detect(tumour_site, "C80") ~ "Cancer of Unknown Primary",
+      str_detect(tumour_site, "C81") ~ "Hodgkin lymphoma",
+      str_detect(tumour_site, "C8[2345]") ~ "Non-Hodgkin lymphoma",
+      str_detect(tumour_site, "C88") ~ "Multiple myeloma",
+      str_detect(tumour_site, "C90") ~ "Multiple myeloma",
+      str_detect(tumour_site, "C9[12345]") ~ "Leukaemia",
+      TRUE ~ "Other malignant neoplasms"
+    )
+  ) |>
+  mutate(
+    gender = fcase(
+      gender_code == 1,
+      "Male",
+      gender_code == 2,
+      "Female",
+      gender_code == 9,
+      "Indeterminate",
+      gender_code == "X",
+      NA
+    )
+  ) |>
+  mutate(
+    ethnicity = fcase(
+      ethnicity_code == "0",
+      "White",
+      ethnicity_code == "A",
+      "White",
+      ethnicity_code == "B",
+      "White",
+      ethnicity_code == "C",
+      "White",
+      ethnicity_code == "CA",
+      "Unknown",
+      ethnicity_code == "CP",
+      "White",
+      ethnicity_code == "D",
+      "Mixed",
+      ethnicity_code == "E",
+      "Mixed",
+      ethnicity_code == "F",
+      "Mixed",
+      ethnicity_code == "G",
+      "Mixed",
+      ethnicity_code == "H",
+      "Asian",
+      ethnicity_code == "J",
+      "Asian",
+      ethnicity_code == "K",
+      "Asian",
+      ethnicity_code == "L",
+      "Asian",
+      ethnicity_code == "M",
+      "Black",
+      ethnicity_code == "N",
+      "Black",
+      ethnicity_code == "P",
+      "Black",
+      ethnicity_code == "R",
+      "Other",
+      ethnicity_code == "S",
+      "Other",
+      ethnicity_code == "X",
+      "Unknown",
+      ethnicity_code == "Z",
+      "Not Stated"
+    )
+  ) |>
+  mutate(
+    vital_status = fcase(
+      vital_status_code == "A",
+      "Alive",
+      vital_status_code == "D",
+      "Dead",
+      vital_status_code == "D3",
+      "Dies before diagnosis",
+      vital_status_code == "X2",
+      "Patient may have been returned and successfully traced",
+      vital_status_code == "X4",
+      "Patient may have been returned but has not been successfully traced",
+      vital_status_code == "X5",
+      "Loss to follow up"
+    )
+  ) |>
+  mutate(diagnosis_year = factor(year(diagnosis_date))) |>
+  as.data.table()
+
+## Generate random ages and derive age-based variables
+age_breaks <-
+  c(0, 19, 24, 29, 34, 39, 44, 49, 54, 59, 64, 69, 74, 79, 84, 89, 999)
+age_labels <-
+  c(
+    "15-19",
+    "20-24",
+    "25-29",
+    "30-34",
+    "35-39",
+    "40-44",
+    "45-49",
+    "50-54",
+    "55-59",
+    "60-64",
+    "65-69",
+    "70-74",
+    "75-79",
+    "80-84",
+    "85-89",
+    "90+"
+  )
+
+dataset <- dataset |>
+  partition(cluster) |>
+  group_by(patient_id) |>
+  mutate(age_at_diagnosis = floor(rnorm(
+    n = 1, mean = 65, sd = 12.5
+  ))) |>
+  collect() |>
+  ungroup() |>
+  mutate(
+    age_at_diagnosis = case_when(
+      age_at_diagnosis < 18 ~ 18,
+      age_at_diagnosis > 99 ~ 99,
+      TRUE ~ age_at_diagnosis
+    )
+  ) |>
+  mutate(birth_date = diagnosis_date - lubridate::years(age_at_diagnosis) - lubridate::days(floor(runif(
+    n = 1, min = 1, max = 10
+  )))) |>
+  mutate(
+    age_category_at_diagnosis = cut(
+      age_at_diagnosis,
+      breaks = age_breaks,
+      labels = age_labels,
+      right = TRUE
+    )
+  ) |>
+  mutate(death_date = case_when(vital_status == "Dead" ~ vital_status_date,
+                                TRUE ~ NA)) |>
+  mutate(age_at_death = floor(as.numeric(
+    difftime(death_date, birth_date, unit = "days") /
+      365.25
+  ))) |>
+  mutate(
+    age_category_at_death = cut(
+      age_at_death,
+      breaks = age_breaks,
+      labels = age_labels,
+      right = TRUE
+    )
+  ) |>
+  mutate(age_category_at_death = case_when(vital_status != "Dead" ~ NA,
+                                           TRUE ~ age_category_at_death)) |>
+  mutate(suicide_death_date = case_when(suicide == 1 ~ vital_status_date,
+                                        TRUE ~ NA)) |>
+  mutate(age_at_suicide_death = floor(as.numeric(
+    difftime(suicide_death_date, birth_date, unit = "days") /
+      365.25
+  ))) |>
+  mutate(
+    age_category_at_suicide_death = cut(
+      age_at_suicide_death,
+      breaks = age_breaks,
+      labels = age_labels,
+      right = TRUE
+    )
+  ) |>
+  mutate(
+    age_category_at_suicide_death = case_when(suicide == 0 ~ NA,
+                                              TRUE ~ age_category_at_suicide_death)
+  )
+
+## Calculate months since diagnosis
+months_breaks <- c(-1, 5, 11, 23, 35, 59, 119, 999)
+months_labels <-
+  c("0-5 mo", "6-11 mo", "12-23 mo", "24-35mo", "3-4y", "5-9y", "10+ y")
+
+dataset <- dataset |>
+  mutate(months_from_diagnosis = floor(as.numeric(
+    difftime(vital_status_date, diagnosis_date, units = c("weeks"))
+  ) / 4)) |>
+  mutate(months_from_diagnosis = case_when(months_from_diagnosis < 0 ~ 0,
+                                           TRUE ~ months_from_diagnosis)) |>
+  mutate(
+    months_category_from_diagnosis = cut(
+      months_from_diagnosis,
+      breaks = months_breaks,
+      labels = months_labels,
+      right = TRUE
+    )
+  )
+
+# Reverse deprivation quintiles
+## Deprivation is sometimes reported from least to most deprived or from most to least deprived. Here, we reverse the quintiles to match what is presented in the JAMA Psychiatry publication. 
+dataset <- dataset |>
+  mutate(
+    deprivation_quintile_reversed = case_when(
+      deprivation_quintile == "1 - most deprived" ~ "5, Most",
+      deprivation_quintile == "2" ~ "4",
+      deprivation_quintile == "3" ~ "3",
+      deprivation_quintile == "4" ~ "2",
+      deprivation_quintile == "5 - least deprived" ~ "1, Least",
+    )
+  )
+
+# Survival analysis
+## Here we shape the data as survival data, following up from the diagnosis date to the date of the vital status update 
+survival <- dataset |>
+  mutate(time = as.numeric(difftime(vital_status_date, diagnosis_date, unit = "days"))) |>
+  filter(time >= 0) |>
+  mutate(time = case_when(time == 0 ~ 1,
+                          TRUE ~ time)) |>
+  mutate(time = as.numeric(time)/365.25) |>
+  mutate(suicide = suicide + 1) |>
+  mutate(
+    gender = factor(gender, levels = c("Male", "Female")),
+    ethnicity = factor(
+      ethnicity,
+      levels = c(
+        "White",
+        "Asian" ,
+        "Black",
+        "Mixed",
+        "Other",
+        "Unknown",
+        "Not Stated"
+      )
+    ),
+    cancer_group = as.factor(cancer_group),
+    deprivation_quintile_reversed = as.factor(deprivation_quintile_reversed),
+  )
+
+# Variable labels
+## Here we apply a number of variable labels for tidiness
+label(survival$age_at_death) <- "Attained age at death"
+label(survival$age_at_diagnosis) <-
+  "Attained age at cancer diagnosis, y"
+label(survival$age_at_suicide_death) <-
+  "Attained age at suicide death, y"
+label(survival$age_category_at_death) <- "Age at death (attained age), y"
+label(survival$age_category_at_diagnosis) <-
+  "Age category at cancer diagnosis"
+label(survival$age_category_at_suicide_death) <-
+  "Age category at suicide death"
+label(survival$birth_date) <- "Birth date"
+label(survival$cancer_group) <- "Last primary cancer"
+label(survival$deathcausecode_1a) <- "Death cause code - 1A"
+label(survival$deathcausecode_1b) <- "Death cause code - 1B"
+label(survival$deathcausecode_1c) <- "Death cause code - 1C"
+label(survival$deathcausecode_2) <- "Death cause code - 2"
+label(survival$deathcausecode_underlying) <-
+  "Death cause code - Underlying"
+label(survival$death_cause_flag) <- "Alive or Dead"
+label(survival$death_date) <- "Date of death"
+label(survival$deprivation_quintile) <- "Deprivation"
+label(survival$deprivation_quintile_reversed) <- "Deprivation"
+label(survival$diagnosis_date) <- "Date of Diagnosis"
+label(survival$diagnosis_year) <- "Year of cancer diagnosis"
+label(survival$ethnicity) <- "Ethnicity"
+label(survival$ethnicity_code) <- "Ethnicity code"
+label(survival$gender) <- "Sex"
+label(survival$gender_code) <- "Gender code"
+label(survival$months_from_diagnosis) <- "Time from cancer diagnosis"
+label(survival$months_category_from_diagnosis) <- "Time from cancer diagnosis"
+label(survival$patient_id) <- "Patient ID"
+label(survival$stage) <- "Tumour stage"
+label(survival$suicide) <- "Suicide-related death (Y/N)"
+label(survival$suicide_cause) <-
+  "Suicide-related death listing on death certificate"
+label(survival$suicide_death_date) <- "Date of suicide death"
+label(survival$time) <- "Person-years observed"
+label(survival$tumour_id) <- "Tumour ID"
+label(survival$tumour_site) <- "Tumour site"
+label(survival$vital_status) <- "Vital Status"
+label(survival$vital_status_code) <- "Vital status code"
+label(survival$vital_status_date) <- "Vital status date"
+
+# Setting variables
+## Here we define our explanatory and dependent variables 
+## Note that the dependent function is a survival function 
+explanatory <- c("gender",
+                 "months_category_from_diagnosis",
+                 "age_category_at_death",
+                 "cancer_group",
+                 "deprivation_quintile_reversed",
+                 "ethnicity",
+                 "diagnosis_year")
+
+dependent <- "Surv(time, suicide)"
+
+# Load in ONS suicide data
+## This is the data for suicides in the general population which we will use to standardise the suicide rates among people with cancer
+## Notably, this data was provided as Excel sheets which require a fair amount of cleaning, so some of the code may seem idiosyncratic because we have to deal with some of the strangeness of trying to import and reshape Excel data for our needs
+
+suicides2022 <- read_xlsx(
+  here("suicides2022.xlsx"),
+  sheet = "Table_6",
+  range = "A6:CK132",
+  col_names = TRUE
+) |>
+  janitor::clean_names() %>%
+  rename_with(~ str_remove(., "_note.*")) |>
+  select(-contains("x10_14_"))
+
+# Clean up observed suicides
+observed_suicides <- suicides2022 |>
+  rename(year = year_of_death_registration) |>
+  select(-area_code, -area_of_usual_residence) |>
+  select(!contains("_ucl") &
+           !contains("_lcl") & !contains("_marker")) %>%
+  rename_with( ~ str_replace(., "^x", "")) |>
+  group_by(sex, year) |>
+  select(contains("_number_of_deaths")) |>
+  pivot_longer(cols = ends_with("_number_of_deaths")) |>
+  rename(attained_age = name, observed_suicides = value) |>
+  mutate(attained_age = str_replace(attained_age, "_number_of_deaths", "")) |>
+  mutate(attained_age = str_replace(attained_age, "_", "-"))
+
+# Clean up standardised suicide rates
+observed_suicide_rates <- suicides2022 |>
+  rename(year = year_of_death_registration) |>
+  select(-area_code, -area_of_usual_residence) |>
+  select(!contains("_ucl") &
+           !contains("_lcl") & !contains("_marker")) %>%
+  rename_with( ~ str_replace(., "^x", "")) |>
+  group_by(sex, year) |>
+  select(contains("_rate_per_100_000")) |>
+  pivot_longer(cols = ends_with("_rate_per_100_000")) |>
+  rename(attained_age = name, suicides_per_100000 = value) |>
+  mutate(attained_age = str_replace(attained_age, "_rate_per_100_000", "")) |>
+  mutate(attained_age = str_replace(attained_age, "_", "-"))
+
+reference_suicides <- observed_suicides |>
+  inner_join(observed_suicide_rates) |>
+  mutate(sex = case_when(sex == "Males" ~ "Male", sex == "Females" ~ "Female", TRUE ~ sex)) |>
+  mutate(attained_age =
+           case_when(attained_age == "90" ~ "90+" , TRUE ~ attained_age)) |>
+  select(year,
+         sex,
+         attained_age,
+         observed_suicides,
+         suicides_per_100000) |>
+  rename(reference_suicides = observed_suicides)
+
+# Save and export raw dataset
+save(dataset,
+     exclusions,
+     survival,
+     reference_suicides,
+     file = here("dataset.Rdata"))
+
+write_csv(dataset, file = here("dataset", "dataset.csv"))
+
+write_csv(survival, file = here("dataset", "survival.csv"))
+
+write_csv(reference_suicides,
+          file = here("dataset", "reference_suicides.csv"))
+```
+
+Using the standardised suicide rates in the general population, we calculate the expected numbers of suicide among those diagnosed with cancer and compare them to the number of suicides actually observed. This gives us the standardised mortality ratio (SMR).
+
+$$
+\text{standardised mortality ratio}=\frac{\text{observed number of suicides}}{\text{expected number of suicides}}
+$$
+
+We can also then calculate absolute excess risk (AER) per 10 000 as follows:
+
+$$
+\text{absolute excess risk per 10,000}=\frac{\text{observed number of suicides} - \text{expected number of suicides}}{\text{person-years at risk}}
+$$
+
+# Sample characteristics
+
+These tables aims to reproduce the main outputs of Table 1 in [@henson_risk_2019]. There are some important differences to note:
+
+-   Age groups are categorised according to the same ones provided by the ONS standardised mortality rates since we will need to standardise using those same age groups anyway
+
+-   Simulacrum covers a different time period than the authors use in [@henson_risk_2019]
+
+-   Ages were randomly generated, so don't read too much into them
+
+```{r}
+#| error: false
+#| message: false
+#| warning: false
+#| code-fold: true
+#| code-summary: "R Code"
+
+# Table 1
+## A quirk of the finalfit package is that survival events need to be coded as "1" and "2" rather than "0" and "1" 
+survival |>
+  mutate(suicide = as.factor(case_when(suicide == 2 ~ "Y", 
+                                       suicide == 1 ~ "N", 
+                                       TRUE ~ NA))) |>
+  summary_factorlist(
+    dependent = "suicide",
+    explanatory = c("gender",
+                 "months_category_from_diagnosis",
+                 "age_category_at_death",
+                 "cancer_group",
+                 "deprivation_quintile_reversed",
+                 "ethnicity",
+                 "age_category_at_diagnosis",
+                 "diagnosis_year"),
+    total_col = TRUE,
+    add_dependent_label = TRUE,
+    add_col_totals = TRUE
+  ) |>
+  kableExtra::kable() |> 
+  kable_classic(full_width = F) |> 
+  footnote(general = "Percentages provided in parentheses.")
+```
+
+
+We can also output an analogous table using Python. 
+
+```{python}
+#| error: false
+#| message: false
+#| warning: false
+#| code-fold: true
+#| code-summary: "Python"
+
+# Import necessary packages
+import pandas as pd
+import numpy as np
+import matplotlib as mpl
+import tableone as tbl1
+import tabulate
+from IPython.display import Markdown
+
+# Import dataset
+df = pd.read_csv("C:/Users/yangj/OneDrive - University College London/NCRAS/dataset/survival.csv")
+
+## Redefine suicide == 0 and suicide == 1 
+df.eval("suicide = suicide - 1", inplace=True)
+
+# Annotate dataset
+columns = ['gender', 'months_category_from_diagnosis', 'age_category_at_death', 'cancer_group', 'deprivation_quintile_reversed', 'ethnicity', 'age_category_at_diagnosis', 'diagnosis_year']
+
+categorical = ['gender', 'months_category_from_diagnosis', 'age_category_at_death', 'cancer_group', 'deprivation_quintile_reversed', 'ethnicity', 'age_category_at_diagnosis', 'diagnosis_year']
+
+order = {
+  'gender': ['Male', 'Female'],
+  'months_category_from_diagnosis': ['0-5 mo', '6-11 mo', '12-23 mo', '24-35mo', '3-4y', '5-9y', '10+ y'],
+  'age_category_at_death': ['15-19', '20-24', '25-29', '30-34', '35-39', '40-44', '45-49', '50-54', '55-59', '60-64', '65-69', '70-74', '75-79', '80-84', '85-89', '90+'],
+  'ethnicity': ['White', 'Asian', 'Black', 'Mixed', 'Other', 'Unknown', 'Not Stated']
+  }
+
+labels = {
+  'gender': 'Sex',
+  'suicide': 'Suicide Death',
+  'months_category_from_diagnosis': 'Time from cancer diagnosis',
+  'age_category_at_death': 'Age at death (attained age), y',
+  'cancer_group': 'Last primary cancer',
+  'deprivation_quintile_reversed': 'Deprivation',
+  'ethnicity': 'Ethnicity',
+  'age_category_at_diagnosis': 'Age category at cancer diagnosis',
+  'diagnosis_year': 'Year of cancer diagnosis'
+  }
+
+groupby = ['suicide']
+
+#Produce Table One
+mytable = tbl1.TableOne(df, columns = columns, rename = labels, order = order, categorical = categorical, groupby = groupby)
+
+Markdown(mytable.tabulate(tablefmt="grid"))
+```
+
+# Suicide SMRs and AERs per 10,000 person-years at risk according to last primary cancer
+
+These tables aim to reproduce the some of the outputs of Table 2 in [@henson_risk_2019].
+
+```{r}
+#| error: false
+#| message: false
+#| warning: false
+#| code-fold: true
+#| code-summary: "R Code"
+
+# Calculate suicides among cancer patients
+cancer_suicides <- survival |>
+  rename(attained_age = age_category_at_death, sex = gender) |>
+  mutate(year = year(vital_status_date)) |>
+  mutate(suicide = suicide - 1) |>
+  group_by(year, sex, attained_age, cancer_group) |>
+  mutate(sex = as.character(sex)) |>
+  mutate(attained_age = as.character(attained_age)) |>
+  summarise(person_years = round(sum(time)),
+            suicide_deaths = sum(suicide)) |>
+  drop_na() |>
+  distinct() |>
+  select(year,
+         sex,
+         attained_age,
+         person_years,
+         suicide_deaths,
+         cancer_group) |>
+  ungroup()
+
+# Calculate SMRs
+cancer_smr <- cancer_suicides |>
+  left_join(reference_suicides) |>
+  mutate(expected_suicides = (person_years / 10000) * suicides_per_100000) |>
+  group_by(cancer_group) |>
+  summarise (
+    observed_suicides = sum(suicide_deaths),
+    expected_suicides = round(sum(expected_suicides)),
+    person_years = sum(person_years)
+  ) |>
+  mutate(
+    smr = signif(observed_suicides / expected_suicides, digits = 2),
+    aer = signif((observed_suicides - expected_suicides) / person_years * 10000,
+                 digits = 2
+    )
+  ) |>
+  select(cancer_group,
+         person_years,
+         observed_suicides,
+         expected_suicides,
+         smr,
+         aer)
+
+kableExtra::kable(
+  cancer_smr,
+  col.names = c(
+    "Last primary cancer",
+    "Person-years observed",
+    "Observed suicide deaths",
+    "Expected suicide deaths",
+    "Standardised mortality ratio",
+    "Absolute excess risk per 10 000"
+  )
+) |>
+  kable_classic(full_width = F)
+
+```
+
+# Suicide SMRs and AERs per 10 000 person-years at risk according to sex for all cancers combined
+
+These tables aim to reproduce the some of the outputs of Table 3 in [@henson_risk_2019].
+
+```{r}
+#| error: false
+#| message: false
+#| warning: false
+#| code-fold: true
+#| code-summary: "R Code"
+
+# Calculate suicides among cancer patients
+cancer_suicides <- survival |>
+  rename(attained_age = age_category_at_death, sex = gender) |>
+  mutate(year = year(vital_status_date)) |>
+  mutate(suicide = suicide - 1) |>
+  group_by(year,
+           sex,
+           attained_age) |>
+  mutate(sex = as.character(sex)) |>
+  mutate(attained_age = as.character(attained_age)) |>
+  summarise(person_years = round(sum(time)),
+            suicide_deaths = sum(suicide)) |>
+  drop_na() |>
+  distinct() |>
+  select(
+    year,
+    sex,
+    attained_age,
+    person_years,
+    suicide_deaths
+  ) |>
+  ungroup()
+
+# Calculate SMRs
+sex_smr <- cancer_suicides |>
+  left_join(reference_suicides) |>
+  mutate(expected_suicides = (person_years / 10000) * suicides_per_100000) |>
+  group_by(sex) |>
+  summarise (
+    observed_suicides = sum(suicide_deaths),
+    expected_suicides = round(sum(expected_suicides)),
+    person_years = sum(person_years)
+  ) |>
+  mutate(
+    smr = signif(observed_suicides / expected_suicides, digits = 2),
+    aer = signif((observed_suicides - expected_suicides) / person_years * 10000,
+                 digits = 2
+    )
+  ) |>
+  select(sex,
+         person_years,
+         observed_suicides,
+         expected_suicides,
+         smr,
+         aer)
+
+kableExtra::kable(
+  sex_smr,
+  col.names = c(
+    "Sex",
+    "Person-years observed",
+    "Observed suicide deaths",
+    "Expected suicide deaths",
+    "Standardised mortality ratio",
+    "Absolute excess risk per 10 000"
+  )
+) |>
+  kable_classic(full_width = F)
+
+```
+
+# Suicide SMRs and AERs per 10 000 person-years at risk according to attained age at death for all cancers combined
+
+These tables aim to reproduce the some of the outputs of Table 3 in [@henson_risk_2019].
+
+```{r}
+#| error: false
+#| message: false
+#| warning: false
+#| code-fold: true
+#| code-summary: "R Code"
+
+# Calculate suicides among cancer patients
+cancer_suicides <- survival |>
+  rename(attained_age = age_category_at_death, sex = gender) |>
+  mutate(year = year(vital_status_date)) |>
+  mutate(suicide = suicide - 1) |>
+  group_by(year,
+           sex,
+           attained_age) |>
+  mutate(sex = as.character(sex)) |>
+  mutate(attained_age = as.character(attained_age)) |>
+  summarise(person_years = round(sum(time)),
+            suicide_deaths = sum(suicide)) |>
+  drop_na() |>
+  distinct() |>
+  select(
+    year,
+    sex,
+    attained_age,
+    person_years,
+    suicide_deaths
+  ) |>
+  ungroup()
+
+# Calculate SMRs
+age_smr <- cancer_suicides |>
+  left_join(reference_suicides) |>
+  mutate(expected_suicides = (person_years / 10000) * suicides_per_100000) |>
+  group_by(attained_age) |>
+  summarise (
+    observed_suicides = sum(suicide_deaths),
+    expected_suicides = round(sum(expected_suicides)),
+    person_years = sum(person_years)
+  ) |>
+  mutate(
+    smr = signif(observed_suicides / expected_suicides, digits = 2),
+    aer = signif((observed_suicides - expected_suicides) / person_years * 10000,
+                 digits = 2
+    )
+  ) |>
+  select(attained_age,
+         person_years,
+         observed_suicides,
+         expected_suicides,
+         smr,
+         aer) |> 
+  dplyr::filter(attained_age != "15-19" & 
+                  attained_age != "20-24")
+
+kableExtra::kable(
+  age_smr,
+  col.names = c(
+    "Attained age at death",
+    "Person-years observed",
+    "Observed suicide deaths",
+    "Expected suicide deaths",
+    "Standardised mortality ratio",
+    "Absolute excess risk per 10 000"
+  )
+) |>
+  kable_classic(full_width = F)
+
+```
+
+# Suicide SMRs and AERs per 10 000 person-years at risk according to deprivation at death for all cancers combined
+
+These tables aim to reproduce the some of the outputs of Table 3 in [@henson_risk_2019].
+
+```{r}
+#| error: false
+#| message: false
+#| warning: false
+#| code-fold: true
+#| code-summary: "R Code"
+
+# Calculate suicides among cancer patients
+cancer_suicides <- survival |>
+  rename(attained_age = age_category_at_death, sex = gender) |>
+  mutate(year = year(vital_status_date)) |>
+  mutate(suicide = suicide - 1) |>
+  group_by(year,
+           sex,
+           attained_age,
+           deprivation_quintile_reversed) |>
+  mutate(sex = as.character(sex)) |>
+  mutate(attained_age = as.character(attained_age)) |>
+  summarise(person_years = round(sum(time)),
+            suicide_deaths = sum(suicide)) |>
+  drop_na() |>
+  distinct() |>
+  select(
+    year,
+    sex,
+    attained_age,
+    person_years,
+    suicide_deaths,
+    deprivation_quintile_reversed
+  ) |>
+  ungroup()
+
+# Calculate SMRs
+deprivation_smr <- cancer_suicides |>
+  left_join(reference_suicides) |>
+  mutate(expected_suicides = (person_years / 10000) * suicides_per_100000) |>
+  group_by(deprivation_quintile_reversed) |>
+  summarise (
+    observed_suicides = sum(suicide_deaths),
+    expected_suicides = round(sum(expected_suicides)),
+    person_years = sum(person_years)
+  ) |>
+  mutate(
+    smr = signif(observed_suicides / expected_suicides, digits = 2),
+    aer = signif((observed_suicides - expected_suicides) / person_years * 10000,
+                 digits = 2
+    )
+  ) |>
+  select(deprivation_quintile_reversed,
+         person_years,
+         observed_suicides,
+         expected_suicides,
+         smr,
+         aer)
+
+kableExtra::kable(
+  deprivation_smr,
+  col.names = c(
+    "Deprivation",
+    "Person-years observed",
+    "Observed suicide deaths",
+    "Expected suicide deaths",
+    "Standardised mortality ratio",
+    "Absolute excess risk per 10 000"
+  )
+) |>
+  kable_classic(full_width = F)
+
+```
+
+# Suicide SMRs and AERs per 10 000 person-years at risk according to ethnicity at death for all cancers combined
+
+These tables aim to reproduce the some of the outputs of Table 3 in [@henson_risk_2019].
+
+```{r}
+#| error: false
+#| message: false
+#| warning: false
+#| code-fold: true
+#| code-summary: "R Code"
+
+# Calculate suicides among cancer patients
+cancer_suicides <- survival |>
+  rename(attained_age = age_category_at_death, sex = gender) |>
+  mutate(year = year(vital_status_date)) |>
+  mutate(suicide = suicide - 1) |>
+  group_by(year,
+           sex,
+           attained_age,
+           ethnicity) |>
+  mutate(sex = as.character(sex)) |>
+  mutate(attained_age = as.character(attained_age)) |>
+  summarise(person_years = round(sum(time)),
+            suicide_deaths = sum(suicide)) |>
+  drop_na() |>
+  distinct() |>
+  select(
+    year,
+    sex,
+    attained_age,
+    person_years,
+    suicide_deaths,
+    ethnicity
+  ) |>
+  ungroup()
+
+# Calculate SMRs
+ethnicity_smr <- cancer_suicides |>
+  left_join(reference_suicides) |>
+  mutate(expected_suicides = (person_years / 10000) * suicides_per_100000) |>
+  group_by(ethnicity) |>
+  summarise (
+    observed_suicides = sum(suicide_deaths),
+    expected_suicides = round(sum(expected_suicides)),
+    person_years = sum(person_years)
+  ) |>
+  mutate(
+    smr = signif(observed_suicides / expected_suicides, digits = 2),
+    aer = signif((observed_suicides - expected_suicides) / person_years * 10000,
+                 digits = 2
+    )
+  ) |>
+  select(ethnicity,
+         person_years,
+         observed_suicides,
+         expected_suicides,
+         smr,
+         aer)
+
+kableExtra::kable(
+  ethnicity_smr,
+  col.names = c(
+    "Ethnicity",
+    "Person-years observed",
+    "Observed suicide deaths",
+    "Expected suicide deaths",
+    "Standardised mortality ratio",
+    "Absolute excess risk per 10 000"
+  )
+) |>
+  kable_classic(full_width = F)
+
+```
