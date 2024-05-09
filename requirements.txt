@@ -1,6 +1,0 @@
-pandas
-matplotlib
-numpy
-tableone
-tabulate
-IPython.display
