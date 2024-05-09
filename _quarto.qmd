@@ -838,7 +838,7 @@ Markdown(mytable.tabulate(tablefmt="grid"))
 
 # Suicide SMRs and AERs per 10,000 person-years at risk according to last primary cancer
 
-These tables aim to reproduce the some of the outputs of Table 2 in [@henson_risk_2019].
+These tables aim to reproduce some of the outputs of Table 2 in [@henson_risk_2019].
 
 ```{r}
 #| error: false
@@ -977,7 +977,7 @@ Markdown(tabulate(cancer_smr_table, headers='keys'))
 ```
 # Suicide SMRs and AERs per 10 000 person-years at risk according to sex for all cancers combined
 
-These tables aim to reproduce the some of the outputs of Table 3 in [@henson_risk_2019].
+These tables aim to reproduce some of the outputs of Table 3 in [@henson_risk_2019].
 
 ```{r}
 #| error: false
@@ -1120,7 +1120,7 @@ Markdown(tabulate(sex_smr_table, headers='keys'))
 ```
 # Suicide SMRs and AERs per 10 000 person-years at risk according to attained age at death for all cancers combined
 
-These tables aim to reproduce the some of the outputs of Table 3 in [@henson_risk_2019].
+These tables aim to reproduce some of the outputs of Table 3 in [@henson_risk_2019].
 
 ```{r}
 #| error: false
@@ -1263,7 +1263,7 @@ Markdown(tabulate(age_smr_table, headers='keys'))
 ```
 # Suicide SMRs and AERs per 10 000 person-years at risk according to deprivation at death for all cancers combined
 
-These tables aim to reproduce the some of the outputs of Table 3 in [@henson_risk_2019].
+These tables aim to reproduce some of the outputs of Table 3 in [@henson_risk_2019].
 
 ```{r}
 #| error: false
@@ -1412,7 +1412,7 @@ Markdown(tabulate(deprivation_smr_table, headers='keys'))
 ```
 # Suicide SMRs and AERs per 10 000 person-years at risk according to ethnicity at death for all cancers combined
 
-These tables aim to reproduce the some of the outputs of Table 3 in [@henson_risk_2019].
+These tables aim to reproduce some of the outputs of Table 3 in [@henson_risk_2019].
 
 ```{r}
 #| error: false
