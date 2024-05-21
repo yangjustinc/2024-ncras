@@ -1,0 +1,325 @@
+---
+title: "Investigating risk of suicide in patients with cancer using routine data"
+subtitle: "Notes on Stata/R/Python code"
+date: "2024-05-22"
+author: 
+  - name: Justin C Yang
+    email: justin.yang@ucl.ac.uk
+    url: https://links.justinyang.me
+    orcid: 0000-0003-2881-4906
+    affiliations: 
+    - University College London
+    - Camden & Islington NHS Foundation Trust
+email-obfuscation: javascript
+format: 
+  revealjs:
+    embed-resources: true
+    
+logo: "logo_black watermark.png"
+transition: fade
+---
+
+## Datasets
+::: {.fragment .fade-in}
+
+* Cancer registry data (linked to civil mortality registers or otherwise including data on suicide mortality) with sex and age 
+  + e.g. [The Simulacrum](https://www.cancerdata.nhs.uk/simulacrum), a synthetic cancer dataset 
+
+:::
+
+::: {.fragment .fade-in}
+
+* Civil mortality registers for the general population with sex and age
+  + e.g. [Registered suicide deaths in England](https://www.ons.gov.uk/peoplepopulationandcommunity/birthsdeathsandmarriages/deaths/bulletins/suicidesintheunitedkingdom/2022registrations)
+
+:::
+
+## Variables {.smaller}
+::: columns
+
+::: {.column width="50%"}
+::: {.fragment .fade-in}
+
+* Required
+  + Age (at cancer diagnosis, during follow-up, at death)
+  + Sex
+  + Cancer type
+  + Date/year of cancer diagnosis
+  + Date/year of suicide death
+  + Date/year of loss to follow-up
+
+:::
+:::
+
+::: {.column width="50%"}
+::: {.fragment .fade-in}
+
+* Confounders
+  + Deprivation
+  + Ethnicity
+  + Tumour grade
+  + Treatment type
+  + Comorbidities
+  + Others
+  
+:::
+:::
+
+:::
+
+## Computations {.smaller}
+
+::: {.fragment .fade-in}
+### Standardised Mortality Ratio (SMR)
+The SMR compares rates of suicide deaths among cancer patients and rates of suicide deaths among the general population, standardised for age, sex, and time period. 
+
+$$ 
+\text{SMR}=\frac{\text{observed number of suicides}}{\text{expected number of suicides}} 
+$$
+:::
+
+::: {.fragment .fade-in}
+### Absolute Excess Risk (AER)
+The AER or attributable risk is the difference between two absolute risks over a specific time period. In this case, it is the difference between observed suicides and expected suicides among patients with cancer. 
+
+$$
+\text{AER}=\frac{\text{observed number of suicides} - \text{expected number of suicides}}{\text{person-years at risk}}
+$$
+:::
+
+## Deriving SMR
+:::incremental
+
+1. Calculate the number of suicide deaths among cancer patients by age group and by sex for each cancer group. These are the observed number of suicides. 
+2. Using age- and sex-standardised suicide rates in the general population, derive the expected number of suicide deaths among cancer patients for each cancer group, multiplying by the number of person-years at risk.
+3. Express the cancer-specific SMRs as a fraction of the observed number of suicides to the expected number of suicides.
+
+:::
+
+## Software Options: Stata {.smaller}
+:::: {.columns}
+
+::: {.column width="40%"}
+* Commercial statistical software package widely used in econometrics and epidemiology with many statistical functions
+* Lower barrier to use with a graphical user interface and programmable automation 
+* Extensible using user-written programs
+* Historically, slower to update features based on version updates but continuous release option is available
+
+:::
+
+::: {.column width="60%"}
+![](https://sscc.wisc.edu/sscc/pubs/intro_stata/stata_gui.png)
+:::
+
+::::
+
+## Example: Stata
+``` stata
+* Calculate expected numbers of deaths using population rates
+
+	gen E_suicide = (_t-_t0) * (poprate / 100000)	
+
+*--OBSERVED NO
+			gen obstr = string(_dsuicide) + " / " + string(E_suicide , "%9.0f")
+			
+			gen smr		= (_dsuicide/E_suicide)
+			gen smrll		= ((invgammap( _dsuicide,     (0.05)/2))/E_suicide) 
+			gen smrul 		= ((invgammap((_dsuicide+ 1), (1.95)/2))/E_suicide) 
+			gen str smrstr = string(smr , "%9.1f") + " (" + string(smrll , "%9.1f") + "," + string(smrul , "%9.1f") + ")" 
+			
+			gen aer		= cond(((_dsuicide- E_suicide)/pyrs)>0 , ((_dsuicide- E_suicide)/pyrs) , 0)
+			gen aerll		= aer - (1.96*(sqrt(_dsuicide)/pyrs))
+			gen aerul		= aer + (1.96*(sqrt(_dsuicide)/pyrs))
+			gen str aerstr = string(aer , "%9.1f") + " (" + string(aerll , "%9.1f") + "," + string(aerul , "%9.1f") + ")"  
+									
+			sort `v'
+			decode `v', gen(strdiag)
+			
+			gen str8 factor=""
+			replace factor = "`v'"
+				
+			keep cancergroup2 factor strdiag smrstr* obstr* aerstr*   
+			save "$resultjuly\result-overallsmr-broad-1899-dep-`v'-`i'", replace
+			restore	
+	}
+	}
+```
+
+## Software Options: R {.smaller}
+:::: {.columns}
+
+::: {.column width="40%"}
+* Open-source interpreted programming language for statistical computing and data visualisation characterised by a very large number of extension packages (20,752!)
+* Learning syntax can be harder but there are many resources to learn different syntactic paradigms (e.g. base R, Tidyverse, data.table, Bioconductor)
+* Very good community support and integrates new statistical methods quickly, even for domain-specific functions
+:::
+
+::: {.column width="60%"}
+![](https://d33wubrfki0l68.cloudfront.net/c1503794c770432d8656dc0144976fd75cea2039/f2cdd/2020/05/27/rstudio-1-3-release/rstudio-1-3-screenshot.png)
+:::
+
+::::
+
+## Example: R
+``` r
+# Calculate SMRs
+cancer_smr <- cancer_suicides |>
+  left_join(reference_suicides) |>
+  mutate(expected_suicides = (person_years / 10000) * suicides_per_100000) |>
+  group_by(cancer_group) |>
+  summarise (
+    observed_suicides = sum(suicide_deaths),
+    expected_suicides = round(sum(expected_suicides)),
+    person_years = sum(person_years)
+  ) |>
+  mutate(
+    smr = round(observed_suicides / expected_suicides, digits = 2),
+    aer = round((observed_suicides - expected_suicides) / person_years * 10000,
+                 digits = 2
+    )
+  ) |>
+  select(cancer_group,
+         person_years,
+         observed_suicides,
+         expected_suicides,
+         smr,
+         aer)
+```
+
+## Software Options: Python {.smaller}
+:::: {.columns}
+
+::: {.column width="40%"}
+
+* High-level, general purpose object-oriented programming language commonly used in data science, particularly deep learning and machine learning
+* Harder to learn as a full programming language but has mature features such as unit testing and debugging
+* Good packages for major data science functions though not all statistical methods are available
+* As a general purpose language, strong at handling large amounts of data and performing non-statistical tasks, such as natural language processing
+
+:::
+
+::: {.column width="60%"}
+![](https://jupyterlab.readthedocs.io/en/stable/_images/notebook-ui.png)
+:::
+
+::::
+
+## Example: Python
+``` python
+# Calculate suicides among cancer patients
+df_survival['attained_age'] = df_survival['age_category_at_death']
+df_survival['sex'] = df_survival['gender']
+df_survival['year'] = pd.to_datetime(df_survival['vital_status_date']).dt.year
+df_survival['suicide'] = df_survival['suicide'] - 1
+
+# Group by and summarize
+grouped = df_survival.groupby(['year', 'sex', 'attained_age', 'cancer_group'])
+cancer_suicides = grouped.agg(
+    person_years=pd.NamedAgg(column='time', aggfunc=lambda x: round(x.sum())),
+    suicide_deaths=pd.NamedAgg(column='suicide', aggfunc='sum')
+).reset_index()
+cancer_suicides.dropna(inplace=True)
+cancer_suicides = cancer_suicides.drop_duplicates()
+cancer_suicides['sex'] = cancer_suicides['sex'].astype(str)
+cancer_suicides['attained_age'] = cancer_suicides['attained_age'].astype(str)
+
+# Prepare for merging by ensuring alignment of the key columns used for join
+cancer_suicides = cancer_suicides.merge(df_suicides, on=['year', 'sex', 'attained_age'], how='left')
+
+# Handle potential NaN values from the merge before calculation
+cancer_suicides['suicides_per_100000'] = cancer_suicides['suicides_per_100000']
+
+# Calculate expected suicides
+cancer_suicides['expected_suicides'] = (cancer_suicides['person_years'] / 10000) * cancer_suicides['suicides_per_100000']
+
+# Aggregate for SMR calculation
+grouped_smr = cancer_suicides.groupby('cancer_group')
+cancer_smr = grouped_smr.agg(
+    observed_suicides=pd.NamedAgg(column='suicide_deaths', aggfunc='sum'),
+    expected_suicides=pd.NamedAgg(column='expected_suicides', aggfunc=lambda x: round(x.sum())),
+    person_years=pd.NamedAgg(column='person_years', aggfunc='sum')
+).reset_index()
+
+cancer_smr['smr'] = np.round(cancer_smr['observed_suicides'] / cancer_smr['expected_suicides'], 2)
+cancer_smr['aer'] = np.round((cancer_smr['observed_suicides'] - cancer_smr['expected_suicides']) / cancer_smr['person_years'] * 10000, 2)
+```
+
+## Software Options: Summary {.smaller}
+
+::: columns
+::: {.column width="33%"}
+::: {.fragment .fade-in-then-semi-out}
+### Stata
+* Statistical and data visualisation software package with GUI and command-line based options
+* Commonly used and taught in some subjects with an engaged support community
+* Cost may be a limiting factor
+
+:::
+:::
+
+::: {.column width="33%"}
+::: {.fragment .fade-in-then-semi-out}
+### R
+* Statistical, data visualisation, and data science programming language with a large number of extension packages 
+* Frequently updated with new features, including cloud-based computing (Posit Cloud), dashboards (Shiny), and RMarkdown
+* No formal support and can be slower without optimisation 
+
+:::
+:::
+
+::: {.column width="33%"}
+::: {.fragment .fade-in-then-semi-out}
+### Python
+* General use, object-oriented programming language with packages for statistics, data visualisation, and data science (e.g. pandas, numpy, scipy, matplotlib)
+* Very mature capabilities in other domains, such as machine learning, data processing pipelines, and natural language processing
+* Considerable learning curve, particularly for non-programmers
+
+:::
+:::
+:::
+
+## Combining Software {.smaller}
+:::incremental
+
+While most analysts become fluent in one or more statistical software packages, analyses are often conducted using a single software option. However, several packages exist to allow calling upon different statistical software in the same document:
+
+* Use Stata with R using the RStata package
+* Use Python with R using the reticulate package
+* Use R with Stata using the RCall package
+* Use Python with Stata (and vice versa) using the PyStata package
+
+:::
+
+## Notes on Low-Resource Computing {.smaller}
+:::incremental
+
+Dealing with large datasets can be challenging, especially datasets which may be larger-than-memory. General advice for dealing with includes:
+
+* Loading only the minimum amount of variables required to run a model
+* Parallelising code wherever possible to take advantage of multi-core computing
+* Using columnar memory formats such as [Apache Arrow](https://arrow.apache.org/) in R, Python, or Julia
+* Using packages, Python and R can work directly with databases, including use of SQL; depending on version, Stata can handle large numbers of variables and observations, depending on edition
+
+::: 
+
+## Final Remarks
+:::incremental
+
+* Each software options has its own advantages and disadvantages and each analyst brings their own experiences and familiarity with different software
+* R and Python are less user-friendly but are free and have powerful extension packages; Stata is more user-friendly but has an associated cost/subscription
+* Stata will be most familiar for econometricians; Python will be most familiar for machine learning and data science; and R is used across a wide variety of subject domains
+* You can mix and match software as needed if you know multiple languages (e.g. Reticulate allows you to run Python from R while RCall allows you to call R from within Stata) 
+
+::: 
+
+## Links {.smaller}
+* Henson et al. Code
+  + [Stata](https://github.com/NHSE-NDRS/risk_of_suicide_after_cancer_diagnosis)
+  + [R and Python](https://yangjustinc.github.io/2024-ncras/)
+* Tutorials
+  + [Introduction to computational causal inference using reproducible Stata, R, and Python code](https://doi.org/10.1002/sim.9234)
+  + [Principal Component Analysis and Regression](https://jbhender.github.io/Stats506/F17/Projects/G18.html)
+* Reference
+  + [Software Carpentry](https://software-carpentry.org/)
+  + [Data Carpentry](https://datacarpentry.org/)
+  + [UCLA OARC Stats](https://stats.oarc.ucla.edu/)
