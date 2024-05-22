@@ -1,6 +1,6 @@
 ---
 title: "Investigating risk of suicide in patients with cancer using routine data"
-subtitle: "Notes on Stata/R/Python code"
+subtitle: "Notes on Stata/R/Python"
 date: "2024-05-22"
 author: 
   - name: Justin C Yang
@@ -279,28 +279,52 @@ cancer_smr['aer'] = np.round((cancer_smr['observed_suicides'] - cancer_smr['expe
 :::
 
 ## Combining Software {.smaller}
+
+::: columns
+::: {.column width="60%"}
 :::incremental
 
 While most analysts become fluent in one or more statistical software packages, analyses are often conducted using a single software option. However, several packages exist to allow calling upon different statistical software in the same document:
 
-* Use Stata with R using the RStata package
-* Use Python with R using the reticulate package
-* Use R with Stata using the RCall package
-* Use Python with Stata (and vice versa) using the PyStata package
+* Use Stata with R using the [RStata](https://cran.r-project.org/web/packages/RStata/index.html){preview-link="true"} package
+* Use Python with R using the [reticulate](https://rstudio.github.io/reticulate/){preview-link="true"} package
+* Use R with Stata (and vice versa) using the [RCall](https://haghish.github.io/rcall/){preview-link="true"} package
+* Use Python with Stata (and vice versa) using the [PyStata](https://www.stata.com/python/pystata18/){preview-link="true"} package
+
+:::
+:::
+
+::: {.column width="40%"}
+
+![](https://nusit.nus.edu.sg/wp-content/uploads/2020/01/combining-r-pythong-using-reticulate-picture1-768x1120.png)
+
+::: 
 
 :::
 
 ## Notes on Low-Resource Computing {.smaller}
+
+::: columns
+::: {.column width="60%"}
 :::incremental
 
 Dealing with large datasets can be challenging, especially datasets which may be larger-than-memory. General advice for dealing with includes:
 
 * Loading only the minimum amount of variables required to run a model
 * Parallelising code wherever possible to take advantage of multi-core computing
-* Using columnar memory formats such as [Apache Arrow](https://arrow.apache.org/) in R, Python, or Julia
+* Using columnar memory formats such as [Apache Arrow](https://arrow.apache.org/){preview-link="true"} in R, Python, or Julia
 * Using packages, Python and R can work directly with databases, including use of SQL; depending on version, Stata can handle large numbers of variables and observations, depending on edition
 
 ::: 
+:::
+
+::: {.column width="40%"}
+
+![](https://arrow.apache.org/img/simd.png)
+
+::: 
+
+:::
 
 ## Final Remarks
 :::incremental
@@ -315,11 +339,11 @@ Dealing with large datasets can be challenging, especially datasets which may be
 ## Links {.smaller}
 * Henson et al. Code
   + [Stata](https://github.com/NHSE-NDRS/risk_of_suicide_after_cancer_diagnosis)
-  + [R and Python](https://yangjustinc.github.io/2024-ncras/)
+  + [R and Python](https://yangjustinc.github.io/2024-ncras/){preview-link="true"}
 * Tutorials
   + [Introduction to computational causal inference using reproducible Stata, R, and Python code](https://doi.org/10.1002/sim.9234)
-  + [Principal Component Analysis and Regression](https://jbhender.github.io/Stats506/F17/Projects/G18.html)
+  + [Principal Component Analysis and Regression](https://jbhender.github.io/Stats506/F17/Projects/G18.html){preview-link="true"}
 * Reference
-  + [Software Carpentry](https://software-carpentry.org/)
-  + [Data Carpentry](https://datacarpentry.org/)
-  + [UCLA OARC Stats](https://stats.oarc.ucla.edu/)
+  + [Software Carpentry](https://software-carpentry.org/){preview-link="true"}
+  + [Data Carpentry](https://datacarpentry.org/){preview-link="true"}
+  + [UCLA OARC Stats](https://stats.oarc.ucla.edu/){preview-link="true"}
