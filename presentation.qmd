@@ -339,7 +339,7 @@ Dealing with large datasets can be challenging, especially datasets which may be
 ## Links {.smaller}
 * Henson et al. Code
   + [Stata](https://github.com/NHSE-NDRS/risk_of_suicide_after_cancer_diagnosis)
-  + [R and Python](https://yangjustinc.github.io/2024-ncras/){preview-link="true"}
+  + [R and Python](https://yangjustinc.github.io/2024-ncras/){preview-link="true"} and [Github repository](https://github.com/yangjustinc/2024-ncras)
 * Tutorials
   + [Introduction to computational causal inference using reproducible Stata, R, and Python code](https://doi.org/10.1002/sim.9234)
   + [Principal Component Analysis and Regression](https://jbhender.github.io/Stats506/F17/Projects/G18.html){preview-link="true"}
